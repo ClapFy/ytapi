@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // Pixel art YTAPI logo
@@ -61,12 +61,40 @@ const LogoSVG = () => {
   return <div dangerouslySetInnerHTML={{ __html: svgHTML }} />;
 };
 
+const AUTH_CHECK_TIMEOUT_MS = 15000;
+
 export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isChecking, setIsChecking] = useState(true);
   const [bootText, setBootText] = useState<string[]>([]);
+
+  const checkAuth = useCallback(async () => {
+    const adminPassword = localStorage.getItem('ytapi_admin_password');
+    if (!adminPassword) {
+      setIsChecking(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), AUTH_CHECK_TIMEOUT_MS);
+    try {
+      const res = await fetch('/api/keys/stats', {
+        headers: { 'x-admin-password': adminPassword },
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        window.location.replace('/dashboard');
+        return;
+      }
+      localStorage.removeItem('ytapi_admin_password');
+    } catch {
+      localStorage.removeItem('ytapi_admin_password');
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    setIsChecking(false);
+  }, []);
 
   // Boot sequence animation
   useEffect(() => {
@@ -79,37 +107,24 @@ export default function LoginPage() {
     ];
 
     let lineIndex = 0;
+    let doneTimeout: ReturnType<typeof setTimeout> | undefined;
     const interval = setInterval(() => {
       if (lineIndex < bootLines.length) {
         setBootText(prev => [...prev, bootLines[lineIndex]]);
         lineIndex++;
       } else {
         clearInterval(interval);
-        setTimeout(() => {
-          checkAuth();
+        doneTimeout = setTimeout(() => {
+          void checkAuth();
         }, 500);
       }
     }, 200);
 
-    return () => clearInterval(interval);
-  }, []);
-
-  const checkAuth = async () => {
-    const adminPassword = localStorage.getItem('ytapi_admin_password');
-    if (adminPassword) {
-      try {
-        const res = await fetch('/api/keys/stats', {
-          headers: { 'x-admin-password': adminPassword },
-        });
-        if (res.ok) {
-          window.location.href = '/dashboard';
-          return;
-        }
-      } catch {}
-      localStorage.removeItem('ytapi_admin_password');
-    }
-    setIsChecking(false);
-  };
+    return () => {
+      clearInterval(interval);
+      if (doneTimeout) clearTimeout(doneTimeout);
+    };
+  }, [checkAuth]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,7 +138,7 @@ export default function LoginPage() {
 
       if (res.ok) {
         localStorage.setItem('ytapi_admin_password', password);
-        window.location.href = '/dashboard';
+        window.location.replace('/dashboard');
       } else {
         setError('ACCESS DENIED: INVALID PASSWORD');
       }

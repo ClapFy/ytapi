@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
@@ -36,34 +36,40 @@ async function start() {
   await fastify.register(statsRoutes, { prefix: '/api/stats' });
   await fastify.register(wsRoutes, { prefix: '/ws' });
 
-  // Serve static dashboard files
+  // Serve static dashboard files (Next export: index.html, dashboard.html, docs.html)
   const dashboardPath = path.join(__dirname, '../../dashboard/dist');
-  
+
   await fastify.register(fastifyStatic, {
     root: dashboardPath,
     prefix: '/',
   });
 
-  // Serve index.html for root and dashboard paths
-  fastify.get('/', async (request, reply) => {
+  fastify.get('/', async (_request, reply) => {
     return reply.sendFile('index.html', dashboardPath);
   });
 
-  fastify.get('/dashboard', async (request, reply) => {
-    return reply.sendFile('index.html', dashboardPath);
-  });
+  const servePage =
+    (file: string) =>
+    async (_request: FastifyRequest, reply: FastifyReply) =>
+      reply.sendFile(file, dashboardPath);
 
-  fastify.get('/docs', async (request, reply) => {
-    return reply.sendFile('index.html', dashboardPath);
-  });
+  fastify.get('/dashboard', servePage('dashboard.html'));
+  fastify.get('/dashboard/', servePage('dashboard.html'));
+  fastify.get('/docs', servePage('docs.html'));
+  fastify.get('/docs/', servePage('docs.html'));
 
-  // Handle client-side routing - serve index.html for all unknown routes
+  // Unknown non-API paths: map to the right exported HTML shell
   fastify.setNotFoundHandler(async (request, reply) => {
-    // If it's an API route, return 404
-    if (request.url.startsWith('/api/') || request.url.startsWith('/ws/') || request.url === '/health') {
+    const pathname = request.url.split('?')[0] || '/';
+    if (pathname.startsWith('/api/') || pathname.startsWith('/ws/') || pathname === '/health') {
       return reply.status(404).send({ error: 'Not found', code: 'NOT_FOUND' });
     }
-    // Otherwise serve the dashboard
+    if (pathname.startsWith('/dashboard')) {
+      return reply.sendFile('dashboard.html', dashboardPath);
+    }
+    if (pathname.startsWith('/docs')) {
+      return reply.sendFile('docs.html', dashboardPath);
+    }
     return reply.sendFile('index.html', dashboardPath);
   });
 

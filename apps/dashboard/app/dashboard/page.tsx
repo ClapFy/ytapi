@@ -129,10 +129,15 @@ export default function DashboardPage() {
   }, [checkAuth]);
 
   useEffect(() => {
-    if (password) {
-      fetchData();
-      setIsLoading(false);
-    }
+    if (!password) return;
+    setIsLoading(true);
+    let cancelled = false;
+    fetchData().finally(() => {
+      if (!cancelled) setIsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [password, fetchData]);
 
   // Auto-refresh data every 5 seconds
