@@ -1,0 +1,22 @@
+[phases.setup]
+nixPkgs = ["nodejs_20", "python311", "ffmpeg"]
+
+[phases.install]
+cmds = [
+  "pip install yt-dlp",
+  "npm install"
+]
+
+[phases.build]
+cmds = [
+  "cd packages/shared && npm run build",
+  "cd apps/dashboard && npm run build",
+  "cd apps/api && npm run build"
+]
+
+[phases.setup.env]
+NPM_CONFIG_LEGACY_PEER_DEPS = "true"
+NODE_OPTIONS = "--max-old-space-size=4096"
+
+[start]
+cmd = "node apps/api/dist/server.js"
