@@ -160,3 +160,4 @@ Access the dashboard at `/` (root path):
 ## License
 
 Apache-2.0
+Cache bust: Thu Apr  9 21:19:25 CEST 2026
