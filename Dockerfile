@@ -1,6 +1,9 @@
 # Build stage for API
 FROM node:20-alpine AS api-builder
 
+# Force cache invalidation
+ARG CACHE_BUST=1
+
 WORKDIR /app/apps/api
 
 # Install API dependencies with dev tools for TypeScript build
@@ -14,6 +17,9 @@ RUN npm run build
 
 # Build stage for dashboard
 FROM node:20-alpine AS dashboard-builder
+
+# Force cache invalidation
+ARG CACHE_BUST=1
 
 WORKDIR /app/apps/dashboard
 
