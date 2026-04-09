@@ -1,4 +1,5 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { DownloadRequest } from '../types';
 import type { SocketStream } from '@fastify/websocket';
 import { storage } from '../services/storage';
 import { validateApiKey } from '../services/auth';
@@ -121,11 +122,11 @@ export async function wsRoutes(fastify: FastifyInstance) {
     const downloadId = uuidv4();
 
     // Create request
-    const downloadRequest = {
+    const downloadRequest: DownloadRequest = {
       id: downloadId,
       url,
       apiKeyId: keyId!,
-      status: 'downloading' as const,
+      status: 'downloading',
       progress: 0,
       createdAt: new Date().toISOString(),
       webhookUrl: webhook_url,
@@ -158,7 +159,7 @@ export async function wsRoutes(fastify: FastifyInstance) {
     }
 
     // Start download with progress tracking
-    const { process: stream } = createYtdlpStream(url);
+    const stream = createYtdlpStream(url);
     let filename = '';
 
     stream.stderr.on('data', (data: Buffer) => {

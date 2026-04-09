@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import fastifyStatic from '@fastify/static';
 import path from 'path';
 import { config } from './config';
 import { storage } from './services/storage';
@@ -38,8 +39,7 @@ async function start() {
   // Serve static dashboard files
   const dashboardPath = path.join(__dirname, '../../dashboard/dist');
   
-  // Serve static files
-  fastify.register(require('@fastify/static'), {
+  await fastify.register(fastifyStatic, {
     root: dashboardPath,
     prefix: '/',
   });
