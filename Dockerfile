@@ -1,27 +1,30 @@
+# Build stage for API
+FROM node:20-alpine AS api-builder
+
+WORKDIR /app/apps/api
+
+# Install API dependencies with dev tools for TypeScript build
+COPY apps/api/package.json ./package.json
+RUN npm install
+
+# Build API
+COPY apps/api/src ./src
+COPY apps/api/tsconfig.json ./tsconfig.json
+RUN npm run build
+
 # Build stage for dashboard
 FROM node:20-alpine AS dashboard-builder
 
-WORKDIR /app
+WORKDIR /app/apps/dashboard
 
-# Copy package files
-COPY package.json turbo.json ./
-COPY apps/dashboard/package.json apps/dashboard/
-COPY packages/shared/package.json packages/shared/
-COPY packages/shared/tsconfig.json packages/shared/
-
-# Install dependencies
+# Install dashboard dependencies
+COPY apps/dashboard/package.json ./package.json
 RUN npm install
 
-# Copy source code
-COPY packages/shared/src packages/shared/src
-COPY apps/dashboard ./apps/dashboard
-
-# Build shared package first
-RUN cd packages/shared && npm run build
-
 # Build dashboard (static export)
+COPY apps/dashboard ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN cd apps/dashboard && npm run build
+RUN npm run build
 
 # Production stage
 FROM python:3.11-slim
@@ -42,21 +45,12 @@ RUN pip install --no-cache-dir yt-dlp
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json turbo.json ./
-COPY apps/api/package.json apps/api/
-COPY packages/shared/package.json packages/shared/
-COPY packages/shared/dist packages/shared/dist
+# Install API runtime dependencies only
+COPY apps/api/package.json apps/api/package.json
+RUN cd apps/api && npm install --omit=dev
 
-# Install production dependencies only
-RUN npm install --production
-
-# Copy API source and build
-COPY apps/api/src apps/api/src
-COPY apps/api/tsconfig.json apps/api/
-RUN cd apps/api && npm run build
-
-# Copy built dashboard from builder stage
+# Copy built application artifacts
+COPY --from=api-builder /app/apps/api/dist ./apps/api/dist
 COPY --from=dashboard-builder /app/apps/dashboard/dist ./apps/dashboard/dist
 
 # Create data directory for Railway volume
