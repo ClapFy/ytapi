@@ -4,6 +4,37 @@ import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import path from 'path';
 import { config } from './config';
+
+const CORS_ALLOWED_HEADERS = [
+  'Content-Type',
+  'Authorization',
+  'Accept',
+  'Origin',
+  'X-Requested-With',
+  'x-api-key',
+  'x-admin-password',
+] as const;
+
+function corsOriginOption(): boolean | ((origin: string | undefined, callback: (err: Error | null, allow: boolean | string) => void) => void) {
+  const raw = config.corsOrigins;
+  if (!raw || raw === '*') {
+    return true;
+  }
+  const allowed = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (allowed.length === 0) {
+    return true;
+  }
+  return (origin, callback) => {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    callback(null, allowed.includes(origin) ? origin : false);
+  };
+}
 import { storage } from './services/storage';
 import { downloadRoutes } from './routes/download';
 import { keysRoutes } from './routes/keys';
@@ -19,10 +50,13 @@ async function start() {
     trustProxy: true,
   });
 
-  // Register plugins
   await fastify.register(cors, {
-    origin: true,
+    origin: corsOriginOption(),
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
+    allowedHeaders: [...CORS_ALLOWED_HEADERS],
+    exposedHeaders: ['Content-Length', 'Content-Type'],
+    maxAge: 86_400,
   });
 
   await fastify.register(websocket);

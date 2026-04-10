@@ -22,6 +22,9 @@ export const config = {
   
   // Max recent requests to keep
   maxRecentRequests: 100,
+
+  /** Comma-separated origins for CORS; empty = reflect request Origin (any origin). */
+  corsOrigins: process.env.CORS_ORIGINS?.trim() || '',
 };
 
 if (!config.adminPassword && config.nodeEnv === 'production') {
