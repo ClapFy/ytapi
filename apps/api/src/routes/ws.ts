@@ -1,9 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { DownloadRequest } from '../types';
 import type { SocketStream } from '@fastify/websocket';
+import { getActiveDownload } from '../services/active-downloads';
 import { storage } from '../services/storage';
 import { validateApiKey } from '../services/auth';
-import { getVideoInfo, createYtdlpStream } from '../services/ytdlp';
+import {
+  createYtdlpStream,
+  forEachStderrLine,
+  getVideoInfo,
+  looksLikeYtdlpFatalLine,
+} from '../services/ytdlp';
 import { sendWebhook } from '../services/webhook';
 
 interface WebSocketQuery {
@@ -68,7 +74,7 @@ export async function wsRoutes(fastify: FastifyInstance) {
         const data = JSON.parse(message.toString());
         
         if (data.action === 'cancel') {
-          // Cancel the download if active
+          getActiveDownload(downloadId)?.cancel();
           connection.socket.send(JSON.stringify({
             type: 'cancelled',
             downloadId,
@@ -161,25 +167,26 @@ export async function wsRoutes(fastify: FastifyInstance) {
     // Start download with progress tracking
     const stream = createYtdlpStream(url);
     let filename = '';
+    let fatalStderrLine: string | undefined;
+    let lastWebhookProgressBucket = -1;
 
-    stream.stderr.on('data', (data: Buffer) => {
-      const line = data.toString();
-      
-      // Parse progress
+    forEachStderrLine(stream.stderr, (line) => {
+      if (looksLikeYtdlpFatalLine(line)) {
+        fatalStderrLine = line.trim();
+      }
+
       const progressMatch = line.match(/(\d+\.?\d*)%\|([^|]*)\|([^|]*)\|?(.*)/);
       if (progressMatch) {
-        const progress = parseFloat(progressMatch[1]);
+        const progress = parseFloat(progressMatch[1]!);
         const speed = progressMatch[2]?.trim() || undefined;
         const eta = progressMatch[3]?.trim() || undefined;
         if (progressMatch[4]) {
           filename = progressMatch[4].trim();
         }
 
-        // Update storage
-        storage.updateRequest({ id: downloadId, progress, speed, eta, filename });
+        void storage.updateRequest({ id: downloadId, progress, speed, eta, filename });
 
-        // Send to WebSocket
-        if (connection.socket.readyState === 1) { // OPEN
+        if (connection.socket.readyState === 1) {
           connection.socket.send(JSON.stringify({
             type: 'progress',
             downloadId,
@@ -193,15 +200,23 @@ export async function wsRoutes(fastify: FastifyInstance) {
           }));
         }
 
-        // Send webhook progress (throttled - every 10%)
-        if (webhook_url && Math.floor(progress) % 10 === 0) {
-          sendWebhook(webhook_url, 'download.progress', {
-            ...downloadRequest,
-            progress,
-            speed,
-            eta,
-            filename,
-          }, webhook_secret);
+        if (webhook_url) {
+          const bucket = Math.min(10, Math.floor(progress / 10));
+          if (bucket !== lastWebhookProgressBucket) {
+            lastWebhookProgressBucket = bucket;
+            void sendWebhook(
+              webhook_url,
+              'download.progress',
+              {
+                ...downloadRequest,
+                progress,
+                speed,
+                eta,
+                filename,
+              },
+              webhook_secret
+            );
+          }
         }
       }
     });
@@ -235,13 +250,15 @@ export async function wsRoutes(fastify: FastifyInstance) {
     });
 
     stream.on('close', async (code: number) => {
-      const success = code === 0;
+      const success = code === 0 && !fatalStderrLine;
       const status = success ? 'completed' : 'failed';
+      const failReason = success ? undefined : (fatalStderrLine ?? `Download failed with exit code ${code}`);
 
-      await storage.updateRequest({ 
-        id: downloadId, 
+      await storage.updateRequest({
+        id: downloadId,
         status,
         progress: success ? 100 : downloadRequest.progress,
+        error: failReason,
         completedAt: new Date().toISOString(),
       });
 
@@ -253,18 +270,25 @@ export async function wsRoutes(fastify: FastifyInstance) {
             status,
             progress: success ? 100 : downloadRequest.progress,
             filename,
+            error: failReason,
           },
         }));
         connection.socket.close();
       }
 
       if (webhook_url) {
-        await sendWebhook(webhook_url, `download.${status}` as any, {
-          ...downloadRequest,
-          status,
-          progress: success ? 100 : downloadRequest.progress,
-          filename,
-        }, webhook_secret);
+        await sendWebhook(
+          webhook_url,
+          `download.${status}` as 'download.completed',
+          {
+            ...downloadRequest,
+            status,
+            progress: success ? 100 : downloadRequest.progress,
+            filename,
+            error: failReason,
+          },
+          webhook_secret
+        );
       }
     });
 

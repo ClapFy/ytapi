@@ -1,10 +1,22 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import fs from 'fs';
+import fsPromises from 'fs/promises';
+import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { validateApiKey } from '../services/auth';
+import { clearActiveDownload, setActiveDownload } from '../services/active-downloads';
 import { storage } from '../services/storage';
-import { downloadVideo, createYtdlpStream, getVideoInfo } from '../services/ytdlp';
+import {
+  createYtdlpStream,
+  downloadVideo,
+  forEachStderrLine,
+  getVideoInfo,
+  looksLikeYtdlpFatalLine,
+} from '../services/ytdlp';
 import { sendWebhook } from '../services/webhook';
+import { config } from '../config';
 import type { DownloadRequest } from '../types';
+import { broadcastProgress } from './ws';
 
 interface DownloadBody {
   url: string;
@@ -16,12 +28,17 @@ interface DownloadParams {
   id: string;
 }
 
-// Active downloads map for progress tracking
-const activeDownloads = new Map<string, { 
-  process: ReturnType<typeof createYtdlpStream>; 
-  cancel: () => void;
-  error?: string;
-}>();
+async function resolveArtifactPath(downloadsDir: string, downloadId: string): Promise<string | undefined> {
+  const entries = await fsPromises.readdir(downloadsDir);
+  const finals = entries.filter(
+    (f) => f.startsWith(`${downloadId}.`) && !/\.f\d+\./.test(f)
+  );
+  if (finals.length === 0) {
+    return undefined;
+  }
+  finals.sort();
+  return path.join(downloadsDir, finals[finals.length - 1]!);
+}
 
 export async function downloadRoutes(fastify: FastifyInstance) {
   // POST /api/download - Start a new download
@@ -76,9 +93,115 @@ export async function downloadRoutes(fastify: FastifyInstance) {
       await sendWebhook(webhook_url, 'download.started', downloadRequest, webhook_secret);
     }
 
-    // Start the download process
+    // Start the download process (writes to disk; use GET /:id/file when completed)
     downloadRequest.status = 'downloading';
     await storage.updateRequest({ id: downloadId, status: 'downloading' });
+
+    const downloadsDir = path.join(config.dataDir, 'downloads');
+    await fsPromises.mkdir(downloadsDir, { recursive: true });
+    const outputTemplate = path.join(downloadsDir, `${downloadId}.%(ext)s`);
+
+    let lastWebhookProgressBucket = -1;
+
+    const { process: proc, cancel } = downloadVideo({
+      url,
+      downloadId,
+      output: outputTemplate,
+      onProgress: async (p) => {
+        await storage.updateRequest({
+          id: downloadId,
+          progress: p.progress,
+          speed: p.speed,
+          eta: p.eta,
+          filename: p.filename,
+        });
+        broadcastProgress(downloadId, {
+          progress: p.progress,
+          speed: p.speed,
+          eta: p.eta,
+          filename: p.filename,
+          status: 'downloading',
+        });
+        if (webhook_url) {
+          const bucket = Math.min(10, Math.floor(p.progress / 10));
+          if (bucket !== lastWebhookProgressBucket) {
+            lastWebhookProgressBucket = bucket;
+            await sendWebhook(
+              webhook_url,
+              'download.progress',
+              {
+                ...downloadRequest,
+                progress: p.progress,
+                speed: p.speed,
+                eta: p.eta,
+                filename: p.filename,
+              },
+              webhook_secret
+            );
+          }
+        }
+      },
+      onComplete: async (success, filename, errMsg) => {
+        clearActiveDownload(downloadId);
+        let artifactPath: string | undefined;
+        if (success) {
+          artifactPath = await resolveArtifactPath(downloadsDir, downloadId);
+        }
+        const status = success ? 'completed' : 'failed';
+        const existing = await storage.getRequestById(downloadId);
+        const prevProgress = existing?.progress ?? downloadRequest.progress;
+        await storage.updateRequest({
+          id: downloadId,
+          status,
+          progress: success ? 100 : prevProgress,
+          error: success ? undefined : (errMsg ?? 'Download failed'),
+          completedAt: new Date().toISOString(),
+          filename: filename || existing?.filename,
+          artifactPath,
+        });
+        broadcastProgress(downloadId, {
+          status,
+          progress: success ? 100 : prevProgress,
+          filename,
+          error: success ? undefined : (errMsg ?? 'Download failed'),
+        });
+        if (webhook_url) {
+          await sendWebhook(
+            webhook_url,
+            `download.${status}` as 'download.completed',
+            {
+              ...downloadRequest,
+              status,
+              progress: success ? 100 : prevProgress,
+              error: success ? undefined : (errMsg ?? 'Download failed'),
+              artifactPath,
+            },
+            webhook_secret
+          );
+        }
+      },
+    });
+
+    setActiveDownload(downloadId, { process: proc, cancel });
+
+    proc.on('error', async (err: Error) => {
+      clearActiveDownload(downloadId);
+      await storage.updateRequest({
+        id: downloadId,
+        status: 'failed',
+        error: err.message,
+        completedAt: new Date().toISOString(),
+      });
+      broadcastProgress(downloadId, { status: 'failed', error: err.message });
+      if (webhook_url) {
+        await sendWebhook(
+          webhook_url,
+          'download.failed',
+          { ...downloadRequest, status: 'failed', error: err.message },
+          webhook_secret
+        );
+      }
+    });
 
     return {
       success: true,
@@ -86,6 +209,54 @@ export async function downloadRoutes(fastify: FastifyInstance) {
       status: 'downloading',
       message: 'Download started',
     };
+  });
+
+  // GET /api/download/:id/file - Stream completed file (POST / background jobs)
+  fastify.get('/:id/file', async (request: FastifyRequest<{ Params: DownloadParams }>, reply: FastifyReply) => {
+    const apiKey = request.headers['x-api-key'] as string;
+
+    if (!apiKey) {
+      return reply.status(401).send({ error: 'API key required', code: 'MISSING_API_KEY' });
+    }
+
+    const { valid, keyId } = await validateApiKey(apiKey);
+    if (!valid) {
+      return reply.status(401).send({ error: 'Invalid API key', code: 'INVALID_API_KEY' });
+    }
+
+    const { id } = request.params;
+    const download = await storage.getRequestById(id);
+
+    if (!download) {
+      return reply.status(404).send({ error: 'Download not found', code: 'NOT_FOUND' });
+    }
+
+    if (download.apiKeyId !== keyId) {
+      return reply.status(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
+
+    if (download.status !== 'completed' || !download.artifactPath) {
+      return reply.status(409).send({
+        error:
+          'File not ready. Wait until status is completed (background jobs only). For a direct stream use POST /api/download/direct.',
+        code: 'NOT_READY',
+        status: download.status,
+      });
+    }
+
+    try {
+      await fsPromises.access(download.artifactPath, fs.constants.R_OK);
+    } catch {
+      return reply.status(410).send({ error: 'File no longer available', code: 'GONE' });
+    }
+
+    const base = path.basename(download.artifactPath);
+    reply.header('Content-Type', 'video/mp4');
+    reply.header(
+      'Content-Disposition',
+      `attachment; filename="${base.replace(/[^a-zA-Z0-9\-_\. ]/g, '_')}"`
+    );
+    return reply.send(fs.createReadStream(download.artifactPath));
   });
 
   // GET /api/download/:id/status - Get download status
@@ -119,6 +290,7 @@ export async function downloadRoutes(fastify: FastifyInstance) {
       error: download.error,
       createdAt: download.createdAt,
       completedAt: download.completedAt,
+      fileReady: Boolean(download.status === 'completed' && download.artifactPath),
     };
   });
 
@@ -190,23 +362,21 @@ export async function downloadRoutes(fastify: FastifyInstance) {
 
     // Stream the video
     const stream = createYtdlpStream(url);
-    
-    stream.stderr.on('data', (data: Buffer) => {
-      const line = data.toString();
-      
-      // Capture error messages from yt-dlp
-      if (line.toLowerCase().includes('error') || 
-          line.toLowerCase().includes('failed') || 
-          line.toLowerCase().includes('unable') ||
-          line.toLowerCase().includes('not available')) {
+
+    forEachStderrLine(stream.stderr, (line) => {
+      if (looksLikeYtdlpFatalLine(line)) {
         downloadError = line.trim();
       }
-      
-      // Parse progress
-      const progressMatch = line.match(/(\d+\.?\d*)%/);
+      const progressMatch =
+        line.match(/(\d+\.?\d*)%\|([^|]*)\|([^|]*)\|?(.*)/) ?? line.match(/(\d+\.?\d*)%/);
       if (progressMatch) {
-        const progress = parseFloat(progressMatch[1]);
-        storage.updateRequest({ id: downloadId, progress });
+        const progress = parseFloat(progressMatch[1]!);
+        void storage.updateRequest({
+          id: downloadId,
+          progress,
+          speed: progressMatch[2]?.trim(),
+          eta: progressMatch[3]?.trim(),
+        });
       }
     });
 

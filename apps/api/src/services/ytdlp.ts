@@ -5,10 +5,48 @@ import type { DownloadRequest, DownloadProgress } from '../types';
 export interface YtdlpOptions {
   url: string;
   downloadId: string;
+  /** Output template or `-` for stdout. Default `-`. */
+  output?: string;
   webhookUrl?: string;
   webhookSecret?: string;
   onProgress?: (progress: DownloadProgress) => void;
   onComplete?: (success: boolean, filename?: string, error?: string) => void;
+}
+
+/** Pipe-delimited progress lines for stderr parsing (use with --newline). */
+export const YTDLP_PROGRESS_TEMPLATE =
+  '%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.filename)s';
+
+export const ytdlpProgressCliArgs = ['--newline', '--progress-template', YTDLP_PROGRESS_TEMPLATE] as const;
+
+/** Buffer stderr chunks into lines so progress regexes see whole lines. */
+export function forEachStderrLine(
+  stderr: NodeJS.ReadableStream,
+  onLine: (line: string) => void
+): void {
+  let buf = '';
+  stderr.on('data', (chunk: Buffer | string) => {
+    buf += typeof chunk === 'string' ? chunk : chunk.toString();
+    const parts = buf.split('\n');
+    buf = parts.pop() ?? '';
+    for (const line of parts) {
+      onLine(line);
+    }
+  });
+}
+
+/** Heuristic: yt-dlp / extractor fatal messages on stderr (not ffmpeg info). */
+export function looksLikeYtdlpFatalLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  const lower = t.toLowerCase();
+  if (lower.startsWith('error:')) return true;
+  if (lower.includes('unable to download')) return true;
+  if (lower.includes('sign in to confirm')) return true;
+  if (lower.includes('video unavailable')) return true;
+  if (lower.includes('private video')) return true;
+  if (lower.includes('this video is not available')) return true;
+  return false;
 }
 
 // Safari 17 user agent for emulation
@@ -58,7 +96,7 @@ export async function getVideoInfo(url: string): Promise<{ title: string; durati
 }
 
 export function downloadVideo(options: YtdlpOptions): { process: ReturnType<typeof spawn>; cancel: () => void } {
-  const { url, onProgress, onComplete } = options;
+  const { url, onProgress, onComplete, output = '-' } = options;
 
   // Format selection: best h.264 video + best audio, fallback to best
   const format = 'bestvideo[ext=mp4][vcodec~="^((he|a)vc|h26[45])"]+bestaudio[ext=m4a]/best[ext=mp4]/best';
@@ -70,9 +108,8 @@ export function downloadVideo(options: YtdlpOptions): { process: ReturnType<type
     '--referer', 'https://www.youtube.com/',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     '--no-playlist',
-    '--newline',
-    '--progress-template', '%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.filename)s',
-    '--output', '-', // Output to stdout
+    ...ytdlpProgressCliArgs,
+    '--output', output,
     url,
   ];
 
@@ -83,10 +120,7 @@ export function downloadVideo(options: YtdlpOptions): { process: ReturnType<type
   let filename = '';
   let currentProgress = 0;
 
-  proc.stderr.on('data', (data) => {
-    const line = data.toString();
-    
-    // Parse progress line
+  forEachStderrLine(proc.stderr, (line) => {
     // Format:  45.5%|5.2MiB/s|01:30|filename.mp4
     const progressMatch = line.match(/(\d+\.?\d*)%\|([^|]*)\|([^|]*)\|?(.*)/);
     if (progressMatch) {
@@ -136,6 +170,7 @@ export function createYtdlpStream(url: string) {
     '--referer', 'https://www.youtube.com/',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     '--no-playlist',
+    ...ytdlpProgressCliArgs,
     '--output', '-',
     url,
   ];

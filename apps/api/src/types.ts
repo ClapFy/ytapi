@@ -22,6 +22,8 @@ export interface DownloadRequest {
   completedAt?: string;
   webhookUrl?: string;
   webhookSecret?: string;
+  /** Absolute path to finished file on disk (background downloads). */
+  artifactPath?: string;
 }
 
 export interface DownloadProgress {
