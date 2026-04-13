@@ -170,9 +170,10 @@ export async function wsRoutes(fastify: FastifyInstance) {
     let fatalStderrLine: string | undefined;
     let lastWebhookProgressBucket = -1;
 
-    forEachStderrLine(stream.stderr, (line) => {
-      if (looksLikeYtdlpFatalLine(line)) {
-        fatalStderrLine = line.trim();
+    const { flush: flushStderrLines } = forEachStderrLine(stream.stderr, (line) => {
+      const t = line.trim();
+      if (looksLikeYtdlpFatalLine(line) || /^\s*ERROR:/i.test(t)) {
+        fatalStderrLine = t;
       }
 
       const progressMatch = line.match(/(\d+\.?\d*)%\|([^|]*)\|([^|]*)\|?(.*)/);
@@ -250,6 +251,7 @@ export async function wsRoutes(fastify: FastifyInstance) {
     });
 
     stream.on('close', async (code: number) => {
+      flushStderrLines();
       const success = code === 0 && !fatalStderrLine;
       const status = success ? 'completed' : 'failed';
       const failReason = success ? undefined : (fatalStderrLine ?? `Download failed with exit code ${code}`);

@@ -8,6 +8,13 @@ export const config = {
   
   // yt-dlp settings
   ytdlpPath: process.env.YTDLP_PATH || 'yt-dlp',
+  /** Optional Netscape cookies file (helps when YouTube returns bot challenges on datacenter IPs). */
+  ytdlpCookiesFile: process.env.YTDLP_COOKIES_FILE?.trim() || '',
+  /**
+   * Passed to --extractor-args. Default favors android/ios clients (often works where web client is blocked).
+   * Override entirely via env if needed.
+   */
+  ytdlpExtractorArgs: process.env.YTDLP_EXTRACTOR_ARGS?.trim() || 'youtube:player_client=android,ios',
   
   // Webhook settings
   webhookTimeout: parseInt(process.env.WEBHOOK_TIMEOUT || '5000'),

@@ -70,6 +70,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATA_DIR=/data
 ENV YTDLP_PATH=yt-dlp
+# Optional: mount Netscape cookies at /data/cookies.txt and set YTDLP_COOKIES_FILE=/data/cookies.txt if YouTube still blocks the Railway IP.
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

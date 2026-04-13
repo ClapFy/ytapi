@@ -19,11 +19,23 @@ export const YTDLP_PROGRESS_TEMPLATE =
 
 export const ytdlpProgressCliArgs = ['--newline', '--progress-template', YTDLP_PROGRESS_TEMPLATE] as const;
 
+/** EJS + YouTube clients that usually work on servers without browser cookies (see yt-dlp wiki / Railway). */
+export function ytdlpServerYouTubeArgs(): string[] {
+  const args: string[] = ['--js-runtimes', 'node'];
+  if (config.ytdlpCookiesFile) {
+    args.push('--cookies', config.ytdlpCookiesFile);
+  }
+  if (config.ytdlpExtractorArgs) {
+    args.push('--extractor-args', config.ytdlpExtractorArgs);
+  }
+  return args;
+}
+
 /** Buffer stderr chunks into lines so progress regexes see whole lines. */
 export function forEachStderrLine(
   stderr: NodeJS.ReadableStream,
   onLine: (line: string) => void
-): void {
+): { flush: () => void } {
   let buf = '';
   stderr.on('data', (chunk: Buffer | string) => {
     buf += typeof chunk === 'string' ? chunk : chunk.toString();
@@ -33,6 +45,15 @@ export function forEachStderrLine(
       onLine(line);
     }
   });
+  return {
+    flush: () => {
+      const rest = buf.trim();
+      buf = '';
+      if (rest) {
+        onLine(rest);
+      }
+    },
+  };
 }
 
 /** Heuristic: yt-dlp / extractor fatal messages on stderr (not ffmpeg info). */
@@ -57,6 +78,7 @@ export async function getVideoInfo(url: string): Promise<{ title: string; durati
     const args = [
       '--dump-json',
       '--no-playlist',
+      ...ytdlpServerYouTubeArgs(),
       '--user-agent', SAFARI_USER_AGENT,
       '--referer', 'https://www.youtube.com/',
       url,
@@ -108,6 +130,7 @@ export function downloadVideo(options: YtdlpOptions): { process: ReturnType<type
     '--referer', 'https://www.youtube.com/',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     '--no-playlist',
+    ...ytdlpServerYouTubeArgs(),
     ...ytdlpProgressCliArgs,
     '--output', output,
     url,
@@ -119,8 +142,12 @@ export function downloadVideo(options: YtdlpOptions): { process: ReturnType<type
 
   let filename = '';
   let currentProgress = 0;
+  let lastErrorLine: string | undefined;
 
-  forEachStderrLine(proc.stderr, (line) => {
+  const { flush: flushStderrLines } = forEachStderrLine(proc.stderr, (line) => {
+    if (looksLikeYtdlpFatalLine(line) || /^\s*ERROR:/i.test(line.trim())) {
+      lastErrorLine = line.trim();
+    }
     // Format:  45.5%|5.2MiB/s|01:30|filename.mp4
     const progressMatch = line.match(/(\d+\.?\d*)%\|([^|]*)\|([^|]*)\|?(.*)/);
     if (progressMatch) {
@@ -143,8 +170,10 @@ export function downloadVideo(options: YtdlpOptions): { process: ReturnType<type
   });
 
   proc.on('close', (code) => {
+    flushStderrLines();
     const success = code === 0;
-    onComplete?.(success, filename, success ? undefined : 'Download failed');
+    const err = success ? undefined : (lastErrorLine ?? `yt-dlp exited with code ${code}`);
+    onComplete?.(success, filename, err);
   });
 
   const cancel = () => {
@@ -170,6 +199,7 @@ export function createYtdlpStream(url: string) {
     '--referer', 'https://www.youtube.com/',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     '--no-playlist',
+    ...ytdlpServerYouTubeArgs(),
     ...ytdlpProgressCliArgs,
     '--output', '-',
     url,

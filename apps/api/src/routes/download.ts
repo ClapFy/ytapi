@@ -363,9 +363,10 @@ export async function downloadRoutes(fastify: FastifyInstance) {
     // Stream the video
     const stream = createYtdlpStream(url);
 
-    forEachStderrLine(stream.stderr, (line) => {
-      if (looksLikeYtdlpFatalLine(line)) {
-        downloadError = line.trim();
+    const { flush: flushStderrLines } = forEachStderrLine(stream.stderr, (line) => {
+      const t = line.trim();
+      if (looksLikeYtdlpFatalLine(line) || /^\s*ERROR:/i.test(t)) {
+        downloadError = t;
       }
       const progressMatch =
         line.match(/(\d+\.?\d*)%\|([^|]*)\|([^|]*)\|?(.*)/) ?? line.match(/(\d+\.?\d*)%/);
@@ -411,6 +412,7 @@ export async function downloadRoutes(fastify: FastifyInstance) {
     });
 
     stream.on('close', async (code: number) => {
+      flushStderrLines();
       const success = code === 0 && !downloadError;
       const status = success ? 'completed' : 'failed';
       const finalError = success ? undefined : (downloadError || `Download failed with exit code ${code}`);
