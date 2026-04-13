@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { config } from '../config';
+import { getEffectiveYtdlpCookiesPath } from './ytdlp-cookies-bootstrap';
 import type { DownloadRequest, DownloadProgress } from '../types';
 
 export interface YtdlpOptions {
@@ -22,8 +23,9 @@ export const ytdlpProgressCliArgs = ['--newline', '--progress-template', YTDLP_P
 /** EJS + YouTube clients that usually work on servers without browser cookies (see yt-dlp wiki / Railway). */
 export function ytdlpServerYouTubeArgs(): string[] {
   const args: string[] = ['--js-runtimes', 'node'];
-  if (config.ytdlpCookiesFile) {
-    args.push('--cookies', config.ytdlpCookiesFile);
+  const cookies = getEffectiveYtdlpCookiesPath();
+  if (cookies) {
+    args.push('--cookies', cookies);
   }
   if (config.ytdlpExtractorArgs) {
     args.push('--extractor-args', config.ytdlpExtractorArgs);

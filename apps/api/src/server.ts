@@ -35,6 +35,7 @@ function corsOriginOption(): boolean | ((origin: string | undefined, callback: (
     callback(null, allowed.includes(origin) ? origin : false);
   };
 }
+import { bootstrapYtdlpCookies } from './services/ytdlp-cookies-bootstrap';
 import { storage } from './services/storage';
 import { downloadRoutes } from './routes/download';
 import { keysRoutes } from './routes/keys';
@@ -44,6 +45,7 @@ import { wsRoutes } from './routes/ws';
 async function start() {
   // Initialize storage
   await storage.init();
+  await bootstrapYtdlpCookies();
 
   const fastify = Fastify({
     logger: true,

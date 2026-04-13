@@ -41,15 +41,13 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     ffmpeg \
-    git \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# yt-dlp: install from GitHub so YouTube extractors stay current (PyPI often lags).
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir "yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git"
+    && pip install --no-cache-dir --upgrade yt-dlp
 
 WORKDIR /app
 
@@ -72,7 +70,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATA_DIR=/data
 ENV YTDLP_PATH=yt-dlp
-# Optional: mount Netscape cookies at /data/cookies.txt and set YTDLP_COOKIES_FILE=/data/cookies.txt if YouTube still blocks the Railway IP.
+# YouTube on cloud IPs: set YTDLP_COOKIES_FILE, or YTDLP_COOKIES_B64 / YTDLP_COOKIES_NETSCAPE (see config). Enable IPv6 egress in railway.json to try a different route.
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
