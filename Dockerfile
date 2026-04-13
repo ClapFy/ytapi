@@ -41,13 +41,15 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     ffmpeg \
+    git \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp
-RUN pip install --no-cache-dir yt-dlp
+# yt-dlp: install from GitHub so YouTube extractors stay current (PyPI often lags).
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git"
 
 WORKDIR /app
 
